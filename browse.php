@@ -424,6 +424,27 @@ $totalCount = $isGrouped
     : count($items);
 $groupCount = $isGrouped ? count($items) : 0;
 
+// Compute the set of available file types in this folder, with the count of
+// hymn groups that contain at least one file of that type. Used to render
+// filter chips above the results. Only enabled for grouped folders, since
+// the filter operates on hymn-level "has-type" membership.
+$typeCounts = [];   // ext (uppercase) => number of hymns containing >=1 file of that type
+$typeOrder  = ['PDF', 'MID', 'MIDI', 'MP3', 'WAV', 'OGG', 'M4A', 'MUS', 'MUSICXML', 'XML', 'PNG', 'TIF', 'TIFF', 'TXT', 'BAK', 'ZIP'];
+if ($isGrouped) {
+    foreach ($items as $g) {
+        if (!empty($g['is_other'])) continue; // Don't count "Other Files" / "Other Audio" buckets.
+        foreach ($g['exts'] as $ext) {
+            $typeCounts[$ext] = ($typeCounts[$ext] ?? 0) + 1;
+        }
+    }
+    // Sort by the canonical order, with anything unknown at the end.
+    uksort($typeCounts, function($a, $b) use ($typeOrder) {
+        $ai = array_search($a, $typeOrder); if ($ai === false) $ai = 999;
+        $bi = array_search($b, $typeOrder); if ($bi === false) $bi = 999;
+        return $ai <=> $bi;
+    });
+}
+
 // Manual-rebuild support: ?refresh=1
 if (isset($_GET['refresh'])) {
     unset($cache[$folder]);
@@ -583,6 +604,7 @@ if (isset($_GET['refresh'])) {
             background: #e8eef5;
             color: #555;
             letter-spacing: 0.5px;
+            white-space: nowrap;
         }
         .badge.pdf  { background: #fde4e4; color: #b53030; }
         .badge.mid, .badge.midi  { background: #e6f3e6; color: #2d7a2d; }
@@ -591,6 +613,74 @@ if (isset($_GET['refresh'])) {
         .badge.txt  { background: #fef4e0; color: #8a5a00; }
         .badge.png, .badge.tif, .badge.tiff  { background: #efeaf5; color: #6b4a8a; }
         .badge.zip, .badge.tar, .badge.gz { background: #ece8e0; color: #6b5a30; }
+
+        /* --- Filter chip bar --- */
+        .filter-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 12px;
+            flex-wrap: wrap;
+        }
+        .filter-label {
+            font-size: 12px;
+            color: #666;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            flex-shrink: 0;
+        }
+        .filter-chips {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            flex-grow: 1;
+        }
+        /* Filter chips reuse .badge color classes but are larger and clickable */
+        .filter-chip {
+            font-size: 12px;
+            padding: 5px 10px;
+            border: 2px solid transparent;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            opacity: 0.7;
+            transition: opacity 0.15s, border-color 0.15s, transform 0.05s;
+            line-height: 1;
+        }
+        .filter-chip:hover { opacity: 1; }
+        .filter-chip:active { transform: scale(0.96); }
+        .filter-chip[aria-pressed="true"] {
+            opacity: 1;
+            border-color: currentColor;
+        }
+        .filter-count {
+            font-size: 10px;
+            font-weight: normal;
+            opacity: 0.7;
+            font-family: monospace;
+        }
+        .filter-clear {
+            font-size: 12px;
+            padding: 5px 10px;
+            background: transparent;
+            color: #666;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            cursor: pointer;
+            font-family: inherit;
+            transition: 0.15s;
+            flex-shrink: 0;
+        }
+        .filter-clear:hover:not(:disabled) {
+            background: #f0f0f0;
+            color: #333;
+        }
+        .filter-clear:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
 
         .expand-icon {
             color: #999;
@@ -663,10 +753,18 @@ if (isset($_GET['refresh'])) {
                 gap: 10px;
                 padding: 12px 14px;
             }
+            /* On mobile, badges sit just under the title — full row, tight gap,
+               smaller chips so 4 fit on a phone width without wrapping awkwardly. */
             .hymn-badges {
                 grid-column: 1 / -1;
                 justify-content: flex-start;
                 margin-top: 6px;
+                gap: 4px;
+            }
+            .badge {
+                font-size: 9px;
+                padding: 2px 6px;
+                letter-spacing: 0.3px;
             }
             .expand-icon {
                 position: absolute;
@@ -676,6 +774,27 @@ if (isset($_GET['refresh'])) {
             .hymn-header { position: relative; padding-right: 35px; }
             .hymn-files { padding: 0 14px 12px 64px; }
             .flat-row { padding: 12px 14px; }
+            /* Filter bar: stack chips below the label, allow horizontal scroll if many */
+            .filter-bar {
+                gap: 8px;
+                margin-top: 14px;
+                padding-top: 12px;
+                border-top: 1px solid #f0f0f0;
+            }
+            .filter-label {
+                width: 100%;
+                font-size: 11px;
+            }
+            .filter-chips { gap: 5px; }
+            .filter-chip {
+                font-size: 11px;
+                padding: 6px 9px;
+            }
+            .filter-clear {
+                font-size: 11px;
+                padding: 6px 10px;
+                margin-left: auto;
+            }
         }
     </style>
 </head>
@@ -708,6 +827,26 @@ if (isset($_GET['refresh'])) {
             </button>
         </div>
 
+        <?php if ($isGrouped && !empty($typeCounts)): ?>
+        <div class="filter-bar" id="filterBar">
+            <span class="filter-label">File types:</span>
+            <div class="filter-chips">
+                <?php foreach ($typeCounts as $ext => $count):
+                    $extLower = strtolower($ext);
+                ?>
+                    <button type="button"
+                            class="filter-chip badge <?= $extLower ?>"
+                            data-type="<?= htmlspecialchars($extLower) ?>"
+                            aria-pressed="false">
+                        <?= htmlspecialchars($ext) ?>
+                        <span class="filter-count"><?= $count ?></span>
+                    </button>
+                <?php endforeach; ?>
+            </div>
+            <button type="button" class="filter-clear" id="filterClear" disabled>Clear</button>
+        </div>
+        <?php endif; ?>
+
         <div class="results-count" id="resultsCount" style="display: none;"></div>
     </div>
 
@@ -721,8 +860,11 @@ if (isset($_GET['refresh'])) {
             <?php foreach ($items as $g):
                 $isOther = !empty($g['is_other']);
                 $searchKey = strtolower(($g['number'] ?? '') . ' ' . $g['title']);
+                // Lowercased, space-separated list of extensions so the JS filter
+                // can do an O(1) "contains" check per row. Empty for "Other" buckets.
+                $typeKey = strtolower(implode(' ', $g['exts']));
             ?>
-                <div class="hymn-row" data-search="<?= htmlspecialchars($searchKey) ?>">
+                <div class="hymn-row" data-search="<?= htmlspecialchars($searchKey) ?>" data-types="<?= htmlspecialchars($typeKey) ?>"<?= $isOther ? ' data-other="1"' : '' ?>>
                     <div class="hymn-header" onclick="toggleHymn(this)">
                         <span class="hymn-number"><?= htmlspecialchars($g['number']) ?></span>
                         <span class="hymn-title"><?= htmlspecialchars($g['title']) ?></span>
@@ -771,39 +913,69 @@ if (isset($_GET['refresh'])) {
     </div>
 
     <script>
-        const searchInput = document.getElementById('searchInput');
-        const clearBtn    = document.getElementById('clearBtn');
-        const results     = document.getElementById('results');
+        const searchInput  = document.getElementById('searchInput');
+        const clearBtn     = document.getElementById('clearBtn');
+        const results      = document.getElementById('results');
         const resultsCount = document.getElementById('resultsCount');
-        const rows        = results.querySelectorAll('[data-search]');
-        const isGrouped   = <?= $isGrouped ? 'true' : 'false' ?>;
+        const rows         = results.querySelectorAll('[data-search]');
+        const isGrouped    = <?= $isGrouped ? 'true' : 'false' ?>;
 
-        function performSearch() {
+        // Filter chip state — set of lowercased file-type strings currently active.
+        // Empty set = no type filter (all types pass).
+        const activeTypes = new Set();
+        const filterChips = document.querySelectorAll('.filter-chip');
+        const filterClear = document.getElementById('filterClear');
+
+        /**
+         * Apply both filters (text search + type chips) and update visibility + count.
+         * A row is visible iff: (1) every search term appears in its data-search, AND
+         * (2) at least one active type appears in its data-types.
+         * "Other Files" / "Other Audio" rows are hidden whenever a type filter is on,
+         * since they don't belong to any specific type.
+         */
+        function applyFilters() {
             const q = searchInput.value.trim().toLowerCase();
-            clearBtn.disabled = q.length === 0;
+            const terms = q.length ? q.split(/\s+/) : [];
+            const hasTypeFilter = activeTypes.size > 0;
 
-            if (q.length === 0) {
-                rows.forEach(r => r.style.display = '');
-                resultsCount.style.display = 'none';
-                return;
-            }
+            clearBtn.disabled = terms.length === 0;
+            if (filterClear) filterClear.disabled = !hasTypeFilter;
 
-            // Split query into terms — every term must match (AND).
-            const terms = q.split(/\s+/);
             let visible = 0;
             rows.forEach(r => {
-                const haystack = r.dataset.search;
-                const match = terms.every(t => haystack.includes(t));
+                let match = true;
+                if (terms.length) {
+                    const haystack = r.dataset.search || '';
+                    match = terms.every(t => haystack.includes(t));
+                }
+                if (match && hasTypeFilter) {
+                    // "Other" buckets never match a type filter.
+                    if (r.dataset.other === '1') {
+                        match = false;
+                    } else {
+                        const types = (r.dataset.types || '').split(' ').filter(Boolean);
+                        match = types.some(t => activeTypes.has(t));
+                    }
+                }
                 r.style.display = match ? '' : 'none';
                 if (match) visible++;
             });
 
+            // Show the results-count line whenever either filter is active.
+            if (terms.length === 0 && !hasTypeFilter) {
+                resultsCount.style.display = 'none';
+                return;
+            }
             resultsCount.style.display = 'block';
             const label = isGrouped ? 'hymn' : 'file';
             const plural = visible === 1 ? '' : 's';
+            const filterDesc = [];
+            if (terms.length) filterDesc.push(`matching <strong>"${escapeHtml(q)}"</strong>`);
+            if (hasTypeFilter) filterDesc.push(`with <strong>${[...activeTypes].map(t => t.toUpperCase()).join(', ')}</strong>`);
+            const filterText = filterDesc.join(' ');
             resultsCount.innerHTML = visible === 0
-                ? `No ${label}s match <strong>"${escapeHtml(q)}"</strong>`
-                : `Showing <strong>${visible}</strong> ${label}${plural}`;
+                ? `No ${label}s ${filterText}`
+                : `Showing <strong>${visible}</strong> ${label}${plural} ${filterText}`;
         }
 
         function escapeHtml(s) {
@@ -816,18 +988,42 @@ if (isset($_GET['refresh'])) {
             headerEl.classList.toggle('expanded');
         }
 
-        searchInput.addEventListener('input', performSearch);
+        searchInput.addEventListener('input', applyFilters);
         clearBtn.addEventListener('click', () => {
             searchInput.value = '';
             searchInput.focus();
-            performSearch();
+            applyFilters();
         });
 
-        // Keyboard: Escape to clear, "/" to focus.
+        // Wire up filter chips: clicking toggles membership in activeTypes.
+        filterChips.forEach(chip => {
+            chip.addEventListener('click', () => {
+                const t = chip.dataset.type;
+                if (activeTypes.has(t)) {
+                    activeTypes.delete(t);
+                    chip.setAttribute('aria-pressed', 'false');
+                } else {
+                    activeTypes.add(t);
+                    chip.setAttribute('aria-pressed', 'true');
+                }
+                applyFilters();
+            });
+        });
+
+        // "Clear" button resets all active type chips.
+        if (filterClear) {
+            filterClear.addEventListener('click', () => {
+                activeTypes.clear();
+                filterChips.forEach(chip => chip.setAttribute('aria-pressed', 'false'));
+                applyFilters();
+            });
+        }
+
+        // Keyboard: Escape clears both filters (when search has focus); "/" focuses search.
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' && document.activeElement === searchInput) {
                 searchInput.value = '';
-                performSearch();
+                applyFilters();
             } else if (e.key === '/' && document.activeElement !== searchInput) {
                 e.preventDefault();
                 searchInput.focus();
