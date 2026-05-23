@@ -182,11 +182,6 @@ foreach ($DOCUMENT_FOLDERS as $folderName => $displayName) {
             font-weight: bold;
             margin-bottom: 4px;
         }
-        .folder-btn .folder-desc {
-            font-size: 12px;
-            opacity: 0.85;
-            line-height: 1.4;
-        }
 
         /* --- Root file list --- */
         .file-list {
@@ -282,7 +277,6 @@ foreach ($DOCUMENT_FOLDERS as $folderName => $displayName) {
             .folder-btn { padding: 15px; }
             .folder-btn i { font-size: 22px; }
             .folder-btn .folder-name { font-size: 14px; }
-            .folder-btn .folder-desc { font-size: 11px; }
             .player-banner { flex-direction: column; align-items: stretch; text-align: center; }
         }
     </style>
@@ -321,7 +315,6 @@ foreach ($DOCUMENT_FOLDERS as $folderName => $displayName) {
                     <a class="folder-btn" href="browse.php?folder=<?= rawurlencode($name) ?>" style="<?= htmlspecialchars($style) ?>">
                         <i class="fas <?= htmlspecialchars($meta['icon']) ?>"></i>
                         <div class="folder-name"><?= htmlspecialchars($name) ?></div>
-                        <div class="folder-desc"><?= htmlspecialchars($meta['desc']) ?></div>
                     </a>
                 <?php endforeach; ?>
             </div>

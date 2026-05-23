@@ -653,18 +653,6 @@ if (isset($_GET['refresh'])) {
             color: #999;
         }
 
-        .footer-actions {
-            margin-top: 15px;
-            text-align: center;
-            font-size: 12px;
-            color: #999;
-        }
-        .footer-actions a {
-            color: #0066cc;
-            text-decoration: none;
-        }
-        .footer-actions a:hover { text-decoration: underline; }
-
         @media (max-width: 768px) {
             body { padding: 10px; }
             .dashboard { position: static; padding: 15px; }
@@ -780,12 +768,6 @@ if (isset($_GET['refresh'])) {
                 </div>
             <?php endforeach; ?>
         <?php endif; ?>
-    </div>
-
-    <div class="footer-actions">
-        <a href="browse.php?folder=<?= rawurlencode($folder) ?>&refresh=1">
-            <i class="fas fa-sync"></i> Refresh file list
-        </a>
     </div>
 
     <script>
