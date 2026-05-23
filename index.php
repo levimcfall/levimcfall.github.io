@@ -17,13 +17,13 @@ $FOLDERS = [
         'color_dark' => '#0052a3',
     ],
     'Offices' => [
-        'icon'       => 'fa-hands-praying',
+        'icon'       => 'fa-book-open',
         'desc'       => 'Liturgical offices and services',
         'color'      => '#0e7c66',  // muted teal
         'color_dark' => '#0a5e4d',
     ],
     'Sacraments and Rites' => [
-        'icon'       => 'fa-church',
+        'icon'       => 'fa-hands-praying',
         'desc'       => 'Sacraments, baptisms, marriages, and more',
         'color'      => '#8a3a3a',  // muted burgundy
         'color_dark' => '#6b2c2c',
