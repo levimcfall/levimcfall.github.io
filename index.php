@@ -292,7 +292,7 @@ foreach ($DOCUMENT_FOLDERS as $folderName => $displayName) {
         <div class="player-banner">
             <div class="pb-text">
                 <h3><i class="fas fa-play-circle"></i> Interactive Music Player</h3>
-                <p>Learn select hymns with synchronized sheet music, adjustable tempo, and voice mixer.</p>
+                <p>Learn selected hymns with synchronized sheet music, adjustable tempo, and voice mixer.</p>
             </div>
             <a href="https://learn.newchurchmusic.org/" target="_blank">
                 Open Player <i class="fas fa-external-link-alt" style="font-size: 11px;"></i>

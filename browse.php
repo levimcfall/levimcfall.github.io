@@ -430,10 +430,17 @@ $groupCount = $isGrouped ? count($items) : 0;
 // the filter operates on hymn-level "has-type" membership.
 $typeCounts = [];   // ext (uppercase) => number of hymns containing >=1 file of that type
 $typeOrder  = ['PDF', 'MID', 'MIDI', 'MP3', 'WAV', 'OGG', 'M4A', 'MUS', 'MUSICXML', 'XML', 'PNG', 'TIF', 'TIFF', 'TXT', 'BAK', 'ZIP'];
+// File types excluded from the filter bar AND from hymn-row badges. These
+// are internal/auxiliary formats (Finale backups, etf transfer files) that
+// users shouldn't be expected to filter by. They still appear in the
+// expanded file list under each hymn — they're just not surfaced as a
+// browseable category.
+$EXCLUDED_TYPES = ['BAK', 'ETF'];
 if ($isGrouped) {
     foreach ($items as $g) {
         if (!empty($g['is_other'])) continue; // Don't count "Other Files" / "Other Audio" buckets.
         foreach ($g['exts'] as $ext) {
+            if (in_array($ext, $EXCLUDED_TYPES, true)) continue;
             $typeCounts[$ext] = ($typeCounts[$ext] ?? 0) + 1;
         }
     }
@@ -681,6 +688,41 @@ if (isset($_GET['refresh'])) {
             opacity: 0.4;
             cursor: not-allowed;
         }
+        /* AND / OR mode toggle — segmented control next to the chips */
+        .filter-mode {
+            display: inline-flex;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+        .filter-mode-btn {
+            font-size: 11px;
+            padding: 5px 10px;
+            background: transparent;
+            color: #666;
+            border: none;
+            cursor: pointer;
+            font-family: inherit;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            transition: 0.15s;
+        }
+        .filter-mode-btn + .filter-mode-btn {
+            border-left: 1px solid #ccc;
+        }
+        .filter-mode-btn:hover:not(.active):not(:disabled) {
+            background: #f0f0f0;
+            color: #333;
+        }
+        .filter-mode-btn.active {
+            background: #0066cc;
+            color: white;
+        }
+        .filter-mode-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
 
         .expand-icon {
             color: #999;
@@ -753,18 +795,13 @@ if (isset($_GET['refresh'])) {
                 gap: 10px;
                 padding: 12px 14px;
             }
-            /* On mobile, badges sit just under the title — full row, tight gap,
-               smaller chips so 4 fit on a phone width without wrapping awkwardly. */
+            /* On mobile, badges sit on a second row aligned to the BOTTOM RIGHT
+               of the hymn-header block. This puts the title up top by itself
+               (less crowded) and tucks the type indicators into the corner. */
             .hymn-badges {
                 grid-column: 1 / -1;
-                justify-content: flex-start;
+                justify-content: flex-end;
                 margin-top: 6px;
-                gap: 4px;
-            }
-            .badge {
-                font-size: 9px;
-                padding: 2px 6px;
-                letter-spacing: 0.3px;
             }
             .expand-icon {
                 position: absolute;
@@ -787,6 +824,10 @@ if (isset($_GET['refresh'])) {
             }
             .filter-chips { gap: 5px; }
             .filter-chip {
+                font-size: 11px;
+                padding: 6px 9px;
+            }
+            .filter-mode-btn {
                 font-size: 11px;
                 padding: 6px 9px;
             }
@@ -843,6 +884,14 @@ if (isset($_GET['refresh'])) {
                     </button>
                 <?php endforeach; ?>
             </div>
+            <div class="filter-mode" role="group" aria-label="Filter combination mode">
+                <button type="button" class="filter-mode-btn active" data-mode="or" id="modeOr"
+                        title="Show hymns with ANY of the selected types"
+                        aria-pressed="true">OR</button>
+                <button type="button" class="filter-mode-btn" data-mode="and" id="modeAnd"
+                        title="Show hymns with ALL of the selected types"
+                        aria-pressed="false">AND</button>
+            </div>
             <button type="button" class="filter-clear" id="filterClear" disabled>Clear</button>
         </div>
         <?php endif; ?>
@@ -860,16 +909,18 @@ if (isset($_GET['refresh'])) {
             <?php foreach ($items as $g):
                 $isOther = !empty($g['is_other']);
                 $searchKey = strtolower(($g['number'] ?? '') . ' ' . $g['title']);
-                // Lowercased, space-separated list of extensions so the JS filter
-                // can do an O(1) "contains" check per row. Empty for "Other" buckets.
-                $typeKey = strtolower(implode(' ', $g['exts']));
+                // Hide excluded types (e.g. BAK, ETF) from the visible badges and
+                // from the type-filter data attribute. The underlying file still
+                // appears in the expanded file list — it's just not a filter category.
+                $visibleExts = array_values(array_filter($g['exts'], fn($e) => !in_array($e, $EXCLUDED_TYPES, true)));
+                $typeKey = strtolower(implode(' ', $visibleExts));
             ?>
                 <div class="hymn-row" data-search="<?= htmlspecialchars($searchKey) ?>" data-types="<?= htmlspecialchars($typeKey) ?>"<?= $isOther ? ' data-other="1"' : '' ?>>
                     <div class="hymn-header" onclick="toggleHymn(this)">
                         <span class="hymn-number"><?= htmlspecialchars($g['number']) ?></span>
                         <span class="hymn-title"><?= htmlspecialchars($g['title']) ?></span>
                         <span class="hymn-badges">
-                            <?php foreach ($g['exts'] as $ext):
+                            <?php foreach ($visibleExts as $ext):
                                 $badgeClass = strtolower($ext);
                             ?>
                                 <span class="badge <?= $badgeClass ?>"><?= htmlspecialchars($ext) ?></span>
@@ -926,10 +977,19 @@ if (isset($_GET['refresh'])) {
         const filterChips = document.querySelectorAll('.filter-chip');
         const filterClear = document.getElementById('filterClear');
 
+        // Combination mode for the type filter: 'or' = has any selected type (default),
+        // 'and' = has every selected type. Only meaningful when 2+ chips are active,
+        // but the buttons are always usable for predictability.
+        let filterMode = 'or';
+        const modeOr  = document.getElementById('modeOr');
+        const modeAnd = document.getElementById('modeAnd');
+
         /**
          * Apply both filters (text search + type chips) and update visibility + count.
          * A row is visible iff: (1) every search term appears in its data-search, AND
-         * (2) at least one active type appears in its data-types.
+         * (2) the row's types satisfy the active type filter under the current mode:
+         *     - OR mode: at least one active type appears in data-types
+         *     - AND mode: every active type appears in data-types
          * "Other Files" / "Other Audio" rows are hidden whenever a type filter is on,
          * since they don't belong to any specific type.
          */
@@ -953,8 +1013,14 @@ if (isset($_GET['refresh'])) {
                     if (r.dataset.other === '1') {
                         match = false;
                     } else {
-                        const types = (r.dataset.types || '').split(' ').filter(Boolean);
-                        match = types.some(t => activeTypes.has(t));
+                        const types = new Set((r.dataset.types || '').split(' ').filter(Boolean));
+                        if (filterMode === 'and') {
+                            // Row must have ALL selected types.
+                            match = [...activeTypes].every(t => types.has(t));
+                        } else {
+                            // OR: row must have AT LEAST ONE selected type.
+                            match = [...activeTypes].some(t => types.has(t));
+                        }
                     }
                 }
                 r.style.display = match ? '' : 'none';
@@ -971,7 +1037,11 @@ if (isset($_GET['refresh'])) {
             const plural = visible === 1 ? '' : 's';
             const filterDesc = [];
             if (terms.length) filterDesc.push(`matching <strong>"${escapeHtml(q)}"</strong>`);
-            if (hasTypeFilter) filterDesc.push(`with <strong>${[...activeTypes].map(t => t.toUpperCase()).join(', ')}</strong>`);
+            if (hasTypeFilter) {
+                const joiner = activeTypes.size > 1 ? ` ${filterMode.toUpperCase()} ` : ', ';
+                const typeList = [...activeTypes].map(t => t.toUpperCase()).join(joiner);
+                filterDesc.push(`with <strong>${typeList}</strong>`);
+            }
             const filterText = filterDesc.join(' ');
             resultsCount.innerHTML = visible === 0
                 ? `No ${label}s ${filterText}`
@@ -1010,7 +1080,17 @@ if (isset($_GET['refresh'])) {
             });
         });
 
-        // "Clear" button resets all active type chips.
+        // AND/OR mode buttons — segmented control.
+        function setFilterMode(mode) {
+            filterMode = mode;
+            if (modeOr)  { modeOr.classList.toggle('active', mode === 'or');   modeOr.setAttribute('aria-pressed', mode === 'or'); }
+            if (modeAnd) { modeAnd.classList.toggle('active', mode === 'and'); modeAnd.setAttribute('aria-pressed', mode === 'and'); }
+            applyFilters();
+        }
+        if (modeOr)  modeOr.addEventListener('click',  () => setFilterMode('or'));
+        if (modeAnd) modeAnd.addEventListener('click', () => setFilterMode('and'));
+
+        // "Clear" button resets all active type chips (but keeps the mode setting).
         if (filterClear) {
             filterClear.addEventListener('click', () => {
                 activeTypes.clear();
