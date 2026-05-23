@@ -870,7 +870,7 @@ if (isset($_GET['refresh'])) {
 
         <?php if ($isGrouped && !empty($typeCounts)): ?>
         <div class="filter-bar" id="filterBar">
-            <span class="filter-label">File types:</span>
+            <span class="filter-label">Filter file types:</span>
             <div class="filter-chips">
                 <?php foreach ($typeCounts as $ext => $count):
                     $extLower = strtolower($ext);
