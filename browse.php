@@ -13,6 +13,12 @@
 // ---------- Configuration ----------
 $ALLOWED_FOLDERS = ['Available Music', 'Offices', 'Sacraments and Rites', 'booksoftheword'];
 $GROUPED_FOLDERS = ['Available Music']; // Folders where files should be grouped by hymn number.
+// Subfolders to also scan and merge into the parent folder's listing.
+// Files from these subfolders get parsed for hymn-number prefix and appended to the
+// matching hymn group; files with no recognizable hymn number go in "Other Audio".
+$SUBFOLDERS = [
+    'Available Music' => ['Audio Files'],
+];
 $CACHE_FILE = __DIR__ . '/cache.json';
 
 // ---------- Input validation ----------
@@ -46,10 +52,12 @@ function human_filesize(int $bytes): string {
 function get_file_icon(string $ext): string {
     if ($ext === 'pdf')                                              return 'fa-file-pdf';
     if (in_array($ext, ['mid', 'midi']))                             return 'fa-music';
+    if (in_array($ext, ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'])) return 'fa-volume-high';
     if (in_array($ext, ['mus', 'musicxml', 'xml']))                  return 'fa-file-code';
     if ($ext === 'txt')                                              return 'fa-file-lines';
     if (in_array($ext, ['png', 'tif', 'tiff', 'jpg', 'jpeg', 'gif'])) return 'fa-file-image';
     if (in_array($ext, ['doc', 'docx']))                             return 'fa-file-word';
+    if (in_array($ext, ['zip', 'tar', 'gz']))                        return 'fa-file-zipper';
     return 'fa-file';
 }
 
@@ -68,6 +76,12 @@ function get_file_icon(string $ext): string {
  *
  *   "153a Holy Supper This Is the Lord's Doing.MUS"
  *       -> numbers=["153a"], title="Holy Supper This Is the Lord's Doing", page=null
+ *
+ *   "821 Come, Thou Almighty King - New Church Liturgy Selections_ Twenty Hymns.mp3"
+ *       -> numbers=[821], title="Come, Thou Almighty King"   (album suffix stripped)
+ *
+ *   "16 - Lori John Odhner - We Will Serve the Lord.mp3"
+ *       -> null   (looks like an album track number, not a hymn)
  *
  * Returns null if the filename doesn't start with a recognizable hymn number.
  */
@@ -88,6 +102,26 @@ function parse_hymn_filename(string $filename): ?array {
 
     $numberSection = $m[1];
     $rest          = $m[2];
+
+    // Reject album-track-number patterns: "16 - Artist - Song" with a leading
+    // dash immediately after the number. Real hymn filenames go straight into
+    // the title text ("16 Title"), never "16 - Title".
+    if (preg_match('/^-\s/', $rest)) {
+        return null;
+    }
+
+    // Strip album/collection suffix from audio recordings. The pattern is
+    // distinctive: " - <Album Name>_ <Subtitle>" where the underscore stands in
+    // for a colon that can't appear in filenames. Examples from Audio Files/:
+    //   "821 Come, Thou Almighty King - New Church Liturgy Selections_ Twenty Hymns"
+    //   "999 The God of Harvest Praise - New Church Liturgy Selections_ Seventeen Hymns"
+    // We require the trailing "_ " (underscore + space) so we don't mangle real
+    // hymn titles that contain " - " inside parentheses, e.g.
+    //   "Sanctus (Ancient - 7th & 8th Offices)"
+    //   "Guide Me, O Thou Great Jehovah (Beethoven - Variant)"
+    if (preg_match('/^(.*?)\s+-\s+[^()]+_\s.+$/', $rest, $am)) {
+        $rest = $am[1];
+    }
 
     // Extract page number from end of title if present: "Title p.1" or "Title p.2"
     $page = null;
@@ -131,23 +165,57 @@ function parse_hymn_filename(string $filename): ?array {
  *   For flat folders: array of file rows, each:
  *     - name, size, ext
  */
-function build_index(string $folderPath, bool $grouped): array {
-    $entries = @scandir($folderPath);
+/**
+ * List regular files in a directory (no recursion, no dotfiles, no directories).
+ * Returns array of ['name' => string, 'size' => int].
+ */
+function scan_files(string $dir): array {
+    $entries = @scandir($dir);
     if ($entries === false) return [];
-
     $files = [];
     foreach ($entries as $entry) {
         if ($entry === '.' || $entry === '..') continue;
-        $full = $folderPath . DIRECTORY_SEPARATOR . $entry;
+        $full = $dir . DIRECTORY_SEPARATOR . $entry;
         if (!is_file($full)) continue;
         if (strpos($entry, '.') === 0) continue;
-        $files[] = [
-            'name' => $entry,
-            'size' => filesize($full),
-        ];
+        $files[] = ['name' => $entry, 'size' => filesize($full)];
     }
+    return $files;
+}
+
+/**
+ * Build the file index for a folder, optionally grouped by hymn number,
+ * optionally merging files from subfolders into matching hymn groups.
+ *
+ * Returns:
+ *   For grouped folders: array of hymn groups, each with:
+ *     - key:         "1000 Come, Ye Thankful People..."   (for search/display)
+ *     - number:      "1000"
+ *     - sort_number: 1000 (numeric for sorting; letter suffixes get fractional)
+ *     - title:       "Come, Ye Thankful People, Come"
+ *     - exts:        ["pdf", "mid", "mus", ...]   (uppercased, unique)
+ *     - files:       array of file rows. Each file has:
+ *           - name:    the bare filename
+ *           - size:    bytes
+ *           - ext:     lowercased extension
+ *           - page:    page number if "p.1" suffix found, else null
+ *           - subdir:  if from a subfolder, the subfolder name; else null
+ *
+ *   For flat folders: array of file rows, each:
+ *     - name, size, ext
+ *
+ * Files from subfolders that don't match any hymn number are collected under
+ * a special "Other Audio" group at the end (distinct from "Other Files",
+ * which holds unparseable files from the main folder).
+ *
+ * @param array<string> $subfolders Names of subfolders to also scan and merge in.
+ */
+function build_index(string $folderPath, bool $grouped, array $subfolders = []): array {
+    // Always scan the main folder.
+    $files = scan_files($folderPath);
 
     if (!$grouped) {
+        // Flat folders: just sort and return. Don't bother with subfolders for these.
         usort($files, fn($a, $b) => strcasecmp($a['name'], $b['name']));
         return array_map(function($f) {
             $f['ext'] = strtolower(pathinfo($f['name'], PATHINFO_EXTENSION));
@@ -156,45 +224,95 @@ function build_index(string $folderPath, bool $grouped): array {
     }
 
     // ---- Grouped: parse each filename and bucket by hymn number ----
-    $groups = []; // keyed by "number|title"
-    $unparsed = []; // anything that doesn't fit the hymn-number pattern
+    $groups = []; // keyed by "number"
+    $unparsed = [];        // unparseable files from the main folder
+    $otherAudio = [];      // unparseable files from subfolders (audio orphans)
 
-    foreach ($files as $f) {
-        $parsed = parse_hymn_filename($f['name']);
-        if ($parsed === null) {
-            $unparsed[] = $f + ['ext' => strtolower(pathinfo($f['name'], PATHINFO_EXTENSION))];
-            continue;
-        }
+    // Track basenames already seen in the main folder so we can dedupe
+    // subfolder files that are exact duplicates (same filename, same hymn).
+    // Key: hymn number; Value: set of lowercased basenames already in that hymn.
+    $seenInGroup = [];
 
-        // A file with multiple numbers (e.g. "106, 110 Sanctus") appears under each number.
+    /**
+     * Add a parsed file into the right hymn group(s).
+     * Closure captures $groups, $seenInGroup by reference.
+     */
+    $addToGroup = function(array $file, array $parsed, ?string $subdir) use (&$groups, &$seenInGroup) {
         foreach ($parsed['numbers'] as $num) {
-            // Build a key that groups files of the same hymn together.
-            // Lowercased title is used so case differences don't split a group.
-            $key = strtolower($num) . '|' . strtolower($parsed['title']);
-            if (!isset($groups[$key])) {
-                // Compute a sortable number: "153a" -> 153.1, "153" -> 153.0
+            $groupKey = strtolower($num);
+            if (!isset($groups[$groupKey])) {
+                // Compute a sortable number: "153a" -> 153.01, "153" -> 153.0
                 $sort = (int)$num;
                 if (preg_match('/[a-z]/i', $num, $sm)) {
                     $sort += (ord(strtolower($sm[0])) - ord('a') + 1) / 100;
                 }
-                $groups[$key] = [
+                $groups[$groupKey] = [
                     'number'      => $num,
                     'sort_number' => $sort,
-                    'title'       => $parsed['title'],
+                    'title'       => $parsed['title'],   // use first-seen title
+                    'titles_seen' => [],                  // track alternate titles
                     'exts'        => [],
                     'files'       => [],
                 ];
+                $seenInGroup[$groupKey] = [];
             }
-            $groups[$key]['files'][] = [
-                'name' => $f['name'],
-                'size' => $f['size'],
-                'ext'  => strtolower($parsed['ext']),
-                'page' => $parsed['page'],
+
+            // Track this title as an alternate if it differs from the canonical one.
+            $titleLower = strtolower($parsed['title']);
+            if (!in_array($titleLower, $groups[$groupKey]['titles_seen'], true)) {
+                $groups[$groupKey]['titles_seen'][] = $titleLower;
+            }
+
+            // Dedupe by exact filename (case-insensitive) within the hymn.
+            // This handles the case where the same .mid lives in both the main folder
+            // and the Audio Files subfolder — only show one copy (the main folder wins
+            // because it's scanned first).
+            $basenameKey = strtolower($file['name']);
+            if (in_array($basenameKey, $seenInGroup[$groupKey], true)) {
+                return; // Skip duplicate.
+            }
+            $seenInGroup[$groupKey][] = $basenameKey;
+
+            $groups[$groupKey]['files'][] = [
+                'name'   => $file['name'],
+                'size'   => $file['size'],
+                'ext'    => strtolower($parsed['ext']),
+                'page'   => $parsed['page'],
+                'subdir' => $subdir, // null for main folder, e.g. "Audio Files" for subfolder
             ];
             $extUpper = strtoupper($parsed['ext']);
-            if (!in_array($extUpper, $groups[$key]['exts'], true)) {
-                $groups[$key]['exts'][] = $extUpper;
+            if (!in_array($extUpper, $groups[$groupKey]['exts'], true)) {
+                $groups[$groupKey]['exts'][] = $extUpper;
             }
+        }
+    };
+
+    // Process main folder first (so its files take precedence in dedup).
+    foreach ($files as $f) {
+        $parsed = parse_hymn_filename($f['name']);
+        if ($parsed === null) {
+            $unparsed[] = $f + ['ext' => strtolower(pathinfo($f['name'], PATHINFO_EXTENSION)), 'subdir' => null];
+            continue;
+        }
+        $addToGroup($f, $parsed, null);
+    }
+
+    // Process each subfolder, merging into existing groups or collecting orphans.
+    foreach ($subfolders as $sub) {
+        $subPath = $folderPath . DIRECTORY_SEPARATOR . $sub;
+        if (!is_dir($subPath)) continue;
+        $subFiles = scan_files($subPath);
+        foreach ($subFiles as $f) {
+            $parsed = parse_hymn_filename($f['name']);
+            if ($parsed === null) {
+                // Subfolder orphans go in "Other Audio", not "Other Files".
+                $otherAudio[] = $f + [
+                    'ext'    => strtolower(pathinfo($f['name'], PATHINFO_EXTENSION)),
+                    'subdir' => $sub,
+                ];
+                continue;
+            }
+            $addToGroup($f, $parsed, $sub);
         }
     }
 
@@ -207,18 +325,23 @@ function build_index(string $folderPath, bool $grouped): array {
         return strcasecmp($a['title'], $b['title']);
     });
 
-    // Sort files within each group: by page number, then by extension.
+    // Sort files within each group: main folder first, then audio subfolder;
+    // within each, by page number then by extension.
     foreach ($groups as &$g) {
-        // Build a display key for search/display.
         $g['key'] = $g['number'] . ' ' . $g['title'];
+        unset($g['titles_seen']); // No longer needed after grouping.
         usort($g['files'], function($a, $b) {
+            // Main folder files first (subdir === null), subfolder files after.
+            $aMain = $a['subdir'] === null ? 0 : 1;
+            $bMain = $b['subdir'] === null ? 0 : 1;
+            if ($aMain !== $bMain) return $aMain <=> $bMain;
             $ap = $a['page'] ?? 0;
             $bp = $b['page'] ?? 0;
             if ($ap !== $bp) return $ap <=> $bp;
-            return strcasecmp($a['ext'], $b['ext']);
+            return strcasecmp($a['name'], $b['name']);
         });
         // Sort extension badges in a consistent order.
-        $extOrder = ['PDF', 'MID', 'MIDI', 'MUS', 'MUSICXML', 'XML', 'PNG', 'TIF', 'TIFF', 'TXT', 'BAK'];
+        $extOrder = ['PDF', 'MID', 'MIDI', 'MP3', 'WAV', 'OGG', 'M4A', 'MUS', 'MUSICXML', 'XML', 'PNG', 'TIF', 'TIFF', 'TXT', 'BAK'];
         usort($g['exts'], function($a, $b) use ($extOrder) {
             $ai = array_search($a, $extOrder); if ($ai === false) $ai = 999;
             $bi = array_search($b, $extOrder); if ($bi === false) $bi = 999;
@@ -227,12 +350,12 @@ function build_index(string $folderPath, bool $grouped): array {
     }
     unset($g);
 
-    // Append unparsed files at the end as a special "Other" pseudo-group.
+    // Append "Other Files" pseudo-group for unparseable main-folder files.
     if (!empty($unparsed)) {
         usort($unparsed, fn($a, $b) => strcasecmp($a['name'], $b['name']));
         $groups[] = [
             'number'      => '',
-            'sort_number' => PHP_INT_MAX,
+            'sort_number' => PHP_INT_MAX - 1,
             'title'       => 'Other Files',
             'key'         => 'Other Files',
             'exts'        => [],
@@ -241,11 +364,36 @@ function build_index(string $folderPath, bool $grouped): array {
         ];
     }
 
+    // Append "Other Audio" pseudo-group for subfolder files we couldn't match
+    // to any hymn (e.g., "audio.zip", "A Dwelling Place for You.mp3").
+    if (!empty($otherAudio)) {
+        usort($otherAudio, fn($a, $b) => strcasecmp($a['name'], $b['name']));
+        $groups[] = [
+            'number'      => '',
+            'sort_number' => PHP_INT_MAX,
+            'title'       => 'Other Audio',
+            'key'         => 'Other Audio',
+            'exts'        => [],
+            'files'       => array_map(fn($f) => $f + ['page' => null], $otherAudio),
+            'is_other'    => true,
+        ];
+    }
+
     return $groups;
 }
 
 // ---------- Cache: load if fresh, otherwise rebuild ----------
+// Effective mtime = max of main folder and any configured subfolders.
+// This way adding a file to Audio Files/ also invalidates the cache.
+$subfolders = $SUBFOLDERS[$folder] ?? [];
 $folderMtime = filemtime($folderPath);
+foreach ($subfolders as $sub) {
+    $subPath = $folderPath . DIRECTORY_SEPARATOR . $sub;
+    if (is_dir($subPath)) {
+        $folderMtime = max($folderMtime, filemtime($subPath));
+    }
+}
+
 $cache = null;
 if (file_exists($CACHE_FILE)) {
     $cache = json_decode(file_get_contents($CACHE_FILE), true);
@@ -259,7 +407,7 @@ $needsRebuild = !isset($cache[$folder])
     || ($cache[$folder]['grouped'] ?? null) !== $isGrouped;
 
 if ($needsRebuild) {
-    $items = build_index($folderPath, $isGrouped);
+    $items = build_index($folderPath, $isGrouped, $subfolders);
     $cache[$folder] = [
         'mtime'   => $folderMtime,
         'grouped' => $isGrouped,
@@ -438,9 +586,11 @@ if (isset($_GET['refresh'])) {
         }
         .badge.pdf  { background: #fde4e4; color: #b53030; }
         .badge.mid, .badge.midi  { background: #e6f3e6; color: #2d7a2d; }
+        .badge.mp3, .badge.wav, .badge.ogg, .badge.m4a, .badge.aac, .badge.flac { background: #e0f0f7; color: #0e7c8a; }
         .badge.mus, .badge.musicxml, .badge.xml  { background: #e6ecf5; color: #3a5a99; }
         .badge.txt  { background: #fef4e0; color: #8a5a00; }
         .badge.png, .badge.tif, .badge.tiff  { background: #efeaf5; color: #6b4a8a; }
+        .badge.zip, .badge.tar, .badge.gz { background: #ece8e0; color: #6b5a30; }
 
         .expand-icon {
             color: #999;
@@ -601,7 +751,11 @@ if (isset($_GET['refresh'])) {
                         <?php foreach ($g['files'] as $f):
                             $ext  = strtolower($f['ext']);
                             $icon = get_file_icon($ext);
-                            $href = safe_link($folder . '/' . $f['name']);
+                            // If the file lives in a subfolder, include that in the href.
+                            $relPath = isset($f['subdir']) && $f['subdir']
+                                ? $folder . '/' . $f['subdir'] . '/' . $f['name']
+                                : $folder . '/' . $f['name'];
+                            $href = safe_link($relPath);
                         ?>
                             <div class="file-link">
                                 <i class="fas <?= $icon ?> file-icon"></i>
